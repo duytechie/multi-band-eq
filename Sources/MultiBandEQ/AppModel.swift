@@ -4,6 +4,18 @@ import CoreAudio
 import EQKit
 import UniformTypeIdentifiers
 
+/// Meter changes should invalidate only the meter, not the entire slider editor.
+@MainActor
+final class OutputMeter: ObservableObject {
+    @Published private(set) var peak: Float = 0
+    @Published private(set) var clipping = false
+
+    func update(peak: Float, clipping: Bool) {
+        if self.peak != peak { self.peak = peak }
+        if self.clipping != clipping { self.clipping = clipping }
+    }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published var session: EditingSession { didSet { sendParameters() } }
@@ -14,8 +26,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var outputName = "System default output"
     @Published private(set) var sampleRate: Double = 48000
     @Published private(set) var bufferFrames: UInt32 = 0
-    @Published private(set) var peak: Float = 0
-    @Published private(set) var clipping = false
+    let meter = OutputMeter()
     @Published var error: String?
     private let audio = SystemAudio()
     private var timer: AnyCancellable?
@@ -69,7 +80,7 @@ final class AppModel: ObservableObject {
         } catch { running = false; self.error = error.localizedDescription }
     }
     func stop() {
-        audio.stop(); running = false; peak = 0; clipping = false; clippingUntil = .distantPast
+        audio.stop(); running = false; meter.update(peak: 0, clipping: false); clippingUntil = .distantPast
     }
     func toggleRunning() { running ? stop() : start() }
     func willSleep() { resumeAfterSleep = running; stop() }
@@ -82,17 +93,20 @@ final class AppModel: ObservableObject {
     private func sendParameters() { parametersPending = !audio.update(effectiveState) }
     private func refreshOutput() {
         if let device = try? HAL.defaultOutput() {
-            outputName = (try? HAL.string(device, kAudioObjectPropertyName)) ?? "System default output"
-            sampleRate = (try? HAL.sampleRate(device)) ?? 48000
+            let name = (try? HAL.string(device, kAudioObjectPropertyName)) ?? "System default output"
+            let rate = (try? HAL.sampleRate(device)) ?? 48000
+            // @Published emits even for equal assignments; avoid idle editor relayouts.
+            if outputName != name { outputName = name }
+            if sampleRate != rate { sampleRate = rate }
         }
     }
     private func tick() {
         guard running else { refreshOutput(); return }
         if audio.routeChanged() { start(); return }
         if parametersPending { sendParameters() }
-        peak = audio.takePeak()
+        let peak = audio.takePeak()
         if peak > 1 { clippingUntil = Date().addingTimeInterval(1.5) }
-        clipping = Date() < clippingUntil
+        meter.update(peak: peak, clipping: Date() < clippingUntil)
         let callbacks = audio.callbacks
         if callbacks != lastCallbacks { lastCallbacks = callbacks; lastCallbackTime = Date() }
         if audio.faults > 0 || Date().timeIntervalSince(lastCallbackTime) > 3 {

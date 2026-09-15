@@ -61,16 +61,7 @@ struct EqualizerView: View {
             }
             Spacer()
             if model.running {
-                VStack(alignment: .trailing, spacing: 3) {
-                    Text(model.peak > 0.00001 ? String(format: "%.1f dBFS", 20 * log10(model.peak)) : "−∞ dBFS")
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(model.clipping ? .orange : .secondary)
-                    Text("OUTPUT PEAK").font(.system(size: 8, weight: .medium)).tracking(0.8).foregroundStyle(.tertiary)
-                }.accessibilityElement(children: .combine).accessibilityLabel("Output peak")
-            }
-            if model.clipping {
-                Label("Clipping — lower master gain", systemImage: "exclamationmark.triangle.fill")
-                    .font(.system(size: 11, weight: .medium)).foregroundStyle(.orange)
+                OutputMeterView(meter: model.meter)
             }
             Toggle("Bypass", isOn: $model.bypassed).toggleStyle(.button).disabled(!model.running)
                 .help("Hear the original sound without changing your curve")
@@ -187,6 +178,27 @@ struct EqualizerView: View {
     }
 }
 
+private struct OutputMeterView: View {
+    @ObservedObject var meter: OutputMeter
+
+    var body: some View {
+        HStack(spacing: 14) {
+            VStack(alignment: .trailing, spacing: 3) {
+                Text(meter.peak > 0.00001 ? String(format: "%.1f dBFS", 20 * log10(meter.peak)) : "−∞ dBFS")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(meter.clipping ? .orange : .secondary)
+                Text("OUTPUT PEAK").font(.system(size: 8, weight: .medium)).tracking(0.8).foregroundStyle(.tertiary)
+            }
+            .frame(width: 90, alignment: .trailing)
+            .accessibilityElement(children: .combine).accessibilityLabel("Output peak")
+            if meter.clipping {
+                Label("Clipping — lower master gain", systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11, weight: .medium)).foregroundStyle(.orange)
+            }
+        }
+    }
+}
+
 struct GainField: View {
     @Binding var value: Float
     var range: ClosedRange<Float>
@@ -243,10 +255,13 @@ struct BandSlider: NSViewRepresentable {
     }
     func updateNSView(_ slider: PrecisionSlider, context: Context) {
         context.coordinator.parent = self
-        slider.doubleValue = value
-        slider.isEnabled = context.environment.isEnabled
+        if slider.doubleValue != value { slider.doubleValue = value }
+        if slider.isEnabled != context.environment.isEnabled { slider.isEnabled = context.environment.isEnabled }
         slider.onSelect = onSelect
-        slider.setAccessibilityValueDescription("\(EQState.db(Float(value))) decibels")
+        let description = "\(EQState.db(Float(value))) decibels"
+        if slider.accessibilityValueDescription() != description {
+            slider.setAccessibilityValueDescription(description)
+        }
     }
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     final class Coordinator: NSObject {
