@@ -8,6 +8,11 @@ struct AudioFailure: LocalizedError {
     var errorDescription: String? { message }
 }
 
+struct AudioOutputDevice: Identifiable, Hashable {
+    let id: AudioObjectID
+    let name: String
+}
+
 enum HAL {
     static func address(_ selector: AudioObjectPropertySelector, _ scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal) -> AudioObjectPropertyAddress {
         .init(mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
@@ -53,6 +58,29 @@ enum HAL {
         guard device != 0 else { throw AudioFailure(message: "No audio output is available. Connect headphones or choose an output in System Settings.") }
         return device
     }
+    static func outputDevices() throws -> [AudioOutputDevice] {
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        var address = address(kAudioHardwarePropertyDevices), size: UInt32 = 0
+        try check(AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size), "Finding audio devices")
+        var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        if !ids.isEmpty {
+            try ids.withUnsafeMutableBytes { bytes in
+                try check(AudioObjectGetPropertyData(system, &address, 0, nil, &size, bytes.baseAddress!), "Finding audio devices")
+            }
+        }
+        return ids.compactMap { id in
+            var alive: UInt32 = 0
+            guard (try? read(id, kAudioDevicePropertyDeviceIsAlive, into: &alive)) != nil,
+                  alive != 0,
+                  let formats = try? formats(id, scope: kAudioDevicePropertyScopeOutput),
+                  formats.reduce(UInt32(0), { $0 + $1.mChannelsPerFrame }) == 2,
+                  let uid = try? string(id, kAudioDevicePropertyDeviceUID),
+                  !uid.hasPrefix("com.tomh.multi-band-eq."),
+                  let name = try? string(id, kAudioObjectPropertyName) else { return nil }
+            return AudioOutputDevice(id: id, name: name)
+        }
+        .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
     static func sampleRate(_ device: AudioObjectID) throws -> Double {
         var value: Double = 0
         try read(device, kAudioDevicePropertyNominalSampleRate, into: &value)
@@ -84,10 +112,13 @@ final class SystemAudio {
     var faults: UInt64 { EQFaultCount(processor) }
     func takePeak() -> Float { EQTakePeak(processor) }
 
-    func start(state: EQState) throws {
+    func start(state: EQState, outputDevice requestedOutput: AudioObjectID) throws {
         stop()
         do {
-            outputDevice = try HAL.defaultOutput()
+            outputDevice = requestedOutput
+            guard outputDevice != 0 else {
+                throw AudioFailure(message: "No audio output is available. Connect headphones or choose an output in System Settings.")
+            }
             let uid = try HAL.string(outputDevice, kAudioDevicePropertyDeviceUID)
             outputName = try HAL.string(outputDevice, kAudioObjectPropertyName)
             sampleRate = try HAL.sampleRate(outputDevice)
@@ -193,10 +224,10 @@ final class SystemAudio {
     }
 
     func routeChanged() -> Bool {
-        guard let device = try? HAL.defaultOutput(), device == outputDevice,
-              let rate = try? HAL.sampleRate(device), abs(rate - sampleRate) < 1 else { return true }
+        guard outputDevice != 0,
+              let rate = try? HAL.sampleRate(outputDevice), abs(rate - sampleRate) < 1 else { return true }
         var alive: UInt32 = 0
-        try? HAL.read(device, kAudioDevicePropertyDeviceIsAlive, into: &alive)
+        try? HAL.read(outputDevice, kAudioDevicePropertyDeviceIsAlive, into: &alive)
         return alive == 0
     }
 }

@@ -24,6 +24,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var running = false
     @Published var bypassed = false { didSet { sendParameters() } }
     @Published private(set) var outputName = "System default output"
+    @Published private(set) var outputDevices: [AudioOutputDevice] = []
+    @Published private(set) var selectedOutputID: AudioObjectID = 0
     @Published private(set) var sampleRate: Double = 48000
     @Published private(set) var bufferFrames: UInt32 = 0
     let meter = OutputMeter()
@@ -42,8 +44,10 @@ final class AppModel: ObservableObject {
             do { session = EditingSession(try EQPreset.decode(data)) }
             catch { session = EditingSession(); self.error = "Saved settings could not be loaded. A flat curve was restored. \(error.localizedDescription)" }
         } else { session = EditingSession() }
-        refreshOutput()
-        timer = Timer.publish(every: 0.25, on: .main, in: .common).autoconnect().sink { [weak self] _ in
+        refreshOutputs()
+        // This also checks route health. A one-second cadence keeps the meter useful without
+        // repeatedly laying out the complete 31-band editor.
+        timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect().sink { [weak self] _ in
             self?.tick()
         }
     }
@@ -74,7 +78,8 @@ final class AppModel: ObservableObject {
     func start() {
         error = nil
         do {
-            try audio.start(state: effectiveState)
+            if selectedOutputID == 0 { refreshOutputs() }
+            try audio.start(state: effectiveState, outputDevice: selectedOutputID)
             outputName = audio.outputName; sampleRate = audio.sampleRate; bufferFrames = audio.bufferFrames
             running = true; lastCallbacks = 0; lastCallbackTime = Date()
         } catch { running = false; self.error = error.localizedDescription }
@@ -83,6 +88,13 @@ final class AppModel: ObservableObject {
         audio.stop(); running = false; meter.update(peak: 0, clipping: false); clippingUntil = .distantPast
     }
     func toggleRunning() { running ? stop() : start() }
+    func selectOutput(_ device: AudioObjectID) {
+        guard device != selectedOutputID, outputDevices.contains(where: { $0.id == device }) else { return }
+        selectedOutputID = device
+        updateOutputDescription()
+        if running { start() }
+    }
+    func refreshAudioDevices() { refreshOutputs() }
     func willSleep() { resumeAfterSleep = running; stop() }
     func didWake() {
         guard resumeAfterSleep else { return }
@@ -91,18 +103,25 @@ final class AppModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.start() }
     }
     private func sendParameters() { parametersPending = !audio.update(effectiveState) }
-    private func refreshOutput() {
-        if let device = try? HAL.defaultOutput() {
-            let name = (try? HAL.string(device, kAudioObjectPropertyName)) ?? "System default output"
-            let rate = (try? HAL.sampleRate(device)) ?? 48000
-            // @Published emits even for equal assignments; avoid idle editor relayouts.
-            if outputName != name { outputName = name }
-            if sampleRate != rate { sampleRate = rate }
+    private func refreshOutputs() {
+        let devices = (try? HAL.outputDevices()) ?? []
+        if outputDevices != devices { outputDevices = devices }
+        if !devices.contains(where: { $0.id == selectedOutputID }) {
+            let defaultID = try? HAL.defaultOutput()
+            selectedOutputID = devices.first(where: { $0.id == defaultID })?.id ?? devices.first?.id ?? 0
         }
+        updateOutputDescription()
+    }
+    private func updateOutputDescription() {
+        let name = outputDevices.first(where: { $0.id == selectedOutputID })?.name ?? "No audio output"
+        let rate = (try? HAL.sampleRate(selectedOutputID)) ?? 48000
+        // @Published emits even for equal assignments; avoid idle editor relayouts.
+        if outputName != name { outputName = name }
+        if sampleRate != rate { sampleRate = rate }
     }
     private func tick() {
-        guard running else { refreshOutput(); return }
-        if audio.routeChanged() { start(); return }
+        guard running else { refreshOutputs(); return }
+        if audio.routeChanged() { refreshOutputs(); start(); return }
         if parametersPending { sendParameters() }
         let peak = audio.takePeak()
         if peak > 1 { clippingUntil = Date().addingTimeInterval(1.5) }

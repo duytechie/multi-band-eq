@@ -11,7 +11,11 @@ const double EQFrequencies[EQ_BANDS] = {
     800,1000,1250,1600,2000,2500,3150,4000,5000,6300,8000,10000,12500,16000,20000
 };
 enum { QUEUE_SIZE = 8, CHANNELS = 2, COEFFS = 5 };
-typedef struct { double c[CHANNELS][EQ_BANDS][COEFFS]; double master; } Parameters;
+typedef struct {
+    double c[CHANNELS][EQ_BANDS][COEFFS];
+    uint32_t active[CHANNELS];
+    double master;
+} Parameters;
 typedef struct { double x1,x2,y1,y2; } History;
 struct EQProcessor {
     double sampleRate;
@@ -60,8 +64,15 @@ bool EQSetGains(EQProcessor *p, const float *left, const float *right, float mas
     unsigned next=(w+1)%QUEUE_SIZE;
     if (next==atomic_load_explicit(&p->readIndex,memory_order_acquire)) return false;
     Parameters *q=&p->queue[w];
-    for (int c=0;c<CHANNELS;c++) for (int b=0;b<EQ_BANDS;b++)
-        coefficients(p->sampleRate,EQFrequencies[b],bounded(c ? right[b] : left[b],-12,12),q->c[c][b]);
+    for (int c=0;c<CHANNELS;c++) {
+        q->active[c]=0;
+        for (int b=0;b<EQ_BANDS;b++) {
+            double gain=bounded(c ? right[b] : left[b],-12,12);
+            coefficients(p->sampleRate,EQFrequencies[b],gain,q->c[c][b]);
+            if (EQFrequencies[b] < p->sampleRate*.5 && fabs(gain) >= 1e-8)
+                q->active[c] |= UINT32_C(1) << b;
+        }
+    }
     q->master=pow(10,bounded(masterDB,-24,12)/20);
     atomic_store_explicit(&p->writeIndex,next,memory_order_release);
     return true;
@@ -87,7 +98,13 @@ static void step(EQProcessor *p) {
 }
 static float sample(EQProcessor *p, float input, int channel) {
     double x=(isfinite(input) ? input : 0)*p->current.master;
-    for (int b=0;b<EQ_BANDS;b++) {
+    // Run only non-identity filters. During a parameter ramp both the old and new
+    // band sets remain active, so a band can fade in or out without a discontinuity.
+    uint32_t active=p->current.active[channel];
+    if (p->rampRemaining) active |= p->target.active[channel];
+    while (active) {
+        int b=__builtin_ctz(active);
+        active &= active-1;
         double *c=p->current.c[channel][b]; History *h=&p->history[channel][b];
         double y=c[0]*x+c[1]*h->x1+c[2]*h->x2-c[3]*h->y1-c[4]*h->y2;
         if (!isfinite(y)) { memset(h,0,sizeof(*h)); y=0; atomic_fetch_add_explicit(&p->faults,1,memory_order_relaxed); }

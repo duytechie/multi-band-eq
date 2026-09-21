@@ -54,7 +54,31 @@ struct EqualizerView: View {
                 Text("MultiBand EQ").font(.system(size: 21, weight: .semibold))
                 HStack(spacing: 6) {
                     Circle().fill(model.running ? Color.green : Color.secondary.opacity(0.5)).frame(width: 6, height: 6)
-                    Text(model.outputName)
+                    Menu {
+                        ForEach(model.outputDevices) { device in
+                            Button {
+                                model.selectOutput(device.id)
+                            } label: {
+                                if device.id == model.selectedOutputID {
+                                    Label(device.name, systemImage: "checkmark")
+                                } else {
+                                    Text(device.name)
+                                }
+                            }
+                        }
+                        if !model.outputDevices.isEmpty { Divider() }
+                        Button("Refresh Audio Devices", systemImage: "arrow.clockwise", action: model.refreshAudioDevices)
+                    } label: {
+                        HStack(spacing: 3) {
+                            Text(model.outputName).lineLimit(1)
+                            Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold))
+                        }
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .frame(maxWidth: 220, alignment: .leading)
+                    .accessibilityLabel("Audio output device")
+                    .help("Choose the output device processed by the equalizer")
                     Text("·").foregroundStyle(.tertiary)
                     Text("\(model.sampleRate / 1000, specifier: "%g") kHz")
                 }.font(.system(size: 11)).foregroundStyle(.secondary)
@@ -69,7 +93,7 @@ struct EqualizerView: View {
                 Label(model.running ? "Stop EQ" : "Enable EQ", systemImage: "power").frame(minWidth: 96)
             }
             .buttonStyle(.borderedProminent).controlSize(.large)
-            .help("Process system audio through the current default output")
+            .help("Process system audio through the selected output")
         }.padding(.horizontal, 24).padding(.vertical, 18)
     }
     private func scale(height: CGFloat) -> some View {
