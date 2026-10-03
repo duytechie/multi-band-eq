@@ -42,7 +42,7 @@ Band centers in Hz:
 12500, 16000, 20000
 ```
 
-Persist committed settings across launches. Closing the editor leaves committed EQ running; Quit stops processing and restores ordinary playback. A minimal menu-bar item provides Open, Enable EQ, and Quit so the app remains accessible.
+Persist committed settings across launches. Closing the editor leaves committed EQ running; the Dock icon reopens the window. Quit stops processing and restores ordinary playback. Enable or stop EQ from the editor window.
 
 ## Audio design
 
@@ -80,7 +80,7 @@ Start with `AVAudioUnitEQ(numberOfBands: 31)`, using fixed-frequency parametric 
 
 ```text
 MultiBandEQ/
-  App/                 app lifecycle, menu bar, window
+  App/                 app lifecycle and window
   Models/              EQ state, band definitions, preset schema
   Views/               equalizer window, band fader, gain editor
   Audio/               tap lifecycle, device routing, render bridge, EQ
